@@ -14,7 +14,6 @@ A self-hosted, private web application designed to fetch, scan, and rate promoti
   - **Promo Codes**
   - **Expiration Dates**
 - **📊 Interactive Dashboard**: A premium, modern React frontend to view, filter, clear, and test settings.
-- **🐳 Dockerized**: Run the entire bundle in one command with Docker Compose.
 
 ---
 
@@ -27,80 +26,48 @@ A self-hosted, private web application designed to fetch, scan, and rate promoti
 
 ---
 
-## ⚡ Quick Start (Docker Compose - Recommended)
+## ⚡ Quick Start Setup
 
-Running via Docker Compose isolates the app's Node dependencies and guarantees consistent execution.
+Follow these simple steps to install and run the application natively on your system:
 
 ### Prerequisites
 1. **Ollama**: Installed and running on your host machine ([Download Ollama](https://ollama.ai)).
-2. **AI Model**: Download your target model:
+2. **AI Model**: Download your target rating model via Ollama:
    ```bash
-   ollama run llama3.2:latest
+   ollama run gemma4
    ```
-3. **Docker & Docker Compose**: Installed on your system.
+3. **Node.js**: Version 18 or higher installed on your computer.
 4. **Google App Password**: You must generate a Google App Password to securely access your Gmail account over IMAP. 
    > [!NOTE]
    > Normal Gmail passwords will **not** work. Go to your **Google Account settings > Security > 2-Step Verification > App Passwords**, and create a new App Password (e.g., named "Email Analyser").
 
-### Run the App
+### Installation & Run
 
 1. **Clone & Enter Directory**:
    ```bash
    cd "Marketing email analyser"
    ```
 
-2. **Initialize Configuration File**:
-   Copy the example template to create a local `config.json` file (this ensures Docker mounts a file rather than a directory):
-   ```bash
-   cp config.example.json config.json
-   ```
-
-3. **Spin Up the Containers**:
-   ```bash
-   docker compose up -d --build
-   ```
-
-4. **Access Dashboard & Configure Settings**:
-   - Open your browser and navigate to: **`http://localhost:3001`**
-   - Click on the **Settings** tab to enter your Gmail address, Google App Password, and target Ollama model.
-   - The web UI will automatically save and write these configurations to your local `config.json` file!
-   
-   > [!IMPORTANT]
-   > **Note on `ollamaUrl` inside Docker:**
-   > When containerized, the app must connect to the host's Ollama instance. In the Settings tab, make sure your **Ollama Server Endpoint** is configured as **`http://host.docker.internal:11434`** (instead of `localhost`). This is already handled for you by the container network bridge.
-
----
-
-## 💻 Local Development Setup (Without Docker)
-
-If you prefer to run the codebase using Node.js natively:
-
-### Prerequisites
-- Node.js (v18 or higher)
-- NPM
-- Ollama running locally
-
-### Installation & Run
-
-1. **Install Dependencies**:
+2. **Install Dependencies**:
    ```bash
    npm install
    ```
 
-2. **Prepare Configuration**:
+3. **Initialize Configuration Template**:
    ```bash
    cp config.example.json config.json
    ```
-   *Edit `config.json` and add your email, Gmail App Password, and keep the `ollamaUrl` as `http://localhost:11434`.*
 
-3. **Run in Development Mode**:
+4. **Run in Development Mode**:
    ```bash
    npm run dev
    ```
    This command starts the Express backend (port `3001`) and the Vite React server concurrently.
 
-4. **Access UI**:
-   Open **`http://localhost:5173`** (Vite default dev server).
+5. **Access Dashboard & Configure Settings**:
+   - Open your browser and navigate to: **`http://localhost:5173`**
+   - Click on the **Settings** tab to enter your Gmail address, Google App Password, and target Ollama model.
+   - The web UI will automatically save and write these configurations to your local `config.json` file for you!
 
 ---
 
