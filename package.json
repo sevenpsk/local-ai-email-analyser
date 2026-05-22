@@ -1,0 +1,28 @@
+{
+  "name": "local-ai-email-analyser",
+  "version": "1.0.0",
+  "description": "Local AI Email Analyser and Deal Rater using Ollama",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "server": "node --watch server.js",
+    "client": "vite",
+    "dev": "concurrently --kill-others \"npm run server\" \"npm run client\"",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "imapflow": "^1.0.156",
+    "mailparser": "^3.7.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^8.2.2",
+    "vite": "^5.2.11"
+  }
+}

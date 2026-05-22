@@ -1,0 +1,11 @@
+{
+  "email": "your-email@gmail.com",
+  "appPassword": "your-google-app-password",
+  "imapHost": "imap.gmail.com",
+  "imapPort": 993,
+  "ollamaUrl": "http://localhost:11434",
+  "ollamaModel": "llama3.2:latest",
+  "fetchLimit": 10,
+  "fetchOnlyUnread": false,
+  "useInbox": false
+}
