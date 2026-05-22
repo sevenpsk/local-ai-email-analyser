@@ -73,7 +73,7 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setSettings(data);
-        setPasswordInput(data.hasPassword ? '••••••••••••••••' : '');
+        setPasswordInput('');
       }
     } catch (err) {
       console.error('Error fetching settings:', err);
@@ -85,7 +85,7 @@ export default function App() {
     setSettingsStatus({ type: 'loading', message: 'Saving settings...' });
     try {
       const body = { ...settings };
-      if (passwordInput && passwordInput !== '••••••••••••••••') {
+      if (passwordInput) {
         body.appPassword = passwordInput;
       }
       
@@ -114,7 +114,7 @@ export default function App() {
         imapHost: settings.imapHost,
         imapPort: settings.imapPort
       };
-      if (passwordInput && passwordInput !== '••••••••••••••••') {
+      if (passwordInput) {
         body.appPassword = passwordInput;
       }
 
@@ -618,9 +618,9 @@ export default function App() {
                 <div className="form-group">
                   <label>Google App Password</label>
                   <input 
-                    type="password" 
+                    type="text" 
                     className="form-input"
-                    placeholder="xxxx xxxx xxxx xxxx"
+                    placeholder={settings.hasPassword ? "•••••••••••••••• (Saved - enter to overwrite)" : "xxxx xxxx xxxx xxxx"}
                     value={passwordInput}
                     onChange={(e) => setPasswordInput(e.target.value)}
                   />
