@@ -4,6 +4,26 @@ A self-hosted, private web application designed to fetch, scan, and rate promoti
 
 ---
 
+## 💡 Project Origin & Philosophy
+
+This project was born out of a very common daily frustration: **getting completely overwhelmed by too many marketing and promotional emails.** 
+
+### 🚀 The Journey: From Python to "Vibe Coding"
+- **The Initial Attempt**: I originally started building a solution using a simple Python script and exporting the analyzed email data to a `.csv` file. 
+- **The Vibe Coding Breakthrough**: Seeking a more interactive and usable dashboard, I decided to try "vibe coding" using **Gemini on Antigravity**. I was incredibly impressed by how effectively Gemini could build a fully realized, responsive, and gorgeous React dashboard integrated with an Express.js backend. It far exceeded my initial scope and expectations!
+
+### ⚙️ Maintainability & Simplicity
+- **The Stack**: The application currently runs on a modern **React (Vite) + Node.js (Express)** stack.
+- **Acknowledging My Expertise**: To be transparent, **I have no formal expertise in this specific Web/React stack.** 
+- **The Goal**: Because of this, my primary directive is to **keep the project simple, clean, and easy to maintain**. I want to avoid overcomplicating the architecture so it remains accessible to run, modify, and understand.
+
+### 🤝 Feedback, Suggestions & Security
+I am very open to recommendations and ideas from the open-source community! 
+- **🔒 Security & Privacy**: Since this app integrates with personal Gmail accounts, security is highly critical. If you have any recommendations for security hardening, please open an issue or pull request.
+- **💡 Recommendations**: If there are ways to clean up or optimize the code while keeping it extremely simple and readable, I'd love to hear them!
+
+---
+
 ## ✨ Features
 
 - **🔐 Local & Secure**: No third-party AI APIs used. All email scanning, analysis, and rated databases are processed and stored locally on your machine.
