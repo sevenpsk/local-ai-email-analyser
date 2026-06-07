@@ -140,6 +140,29 @@ ${truncatedText}`;
   }
 }
 
+// Helper: Unload Ollama Model from memory (RAM)
+async function unloadOllamaModel(config) {
+  const url = `${config.ollamaUrl}/api/chat`;
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: config.ollamaModel,
+        messages: [],
+        keep_alive: 0
+      })
+    });
+    if (response.ok) {
+      console.log(`[Ollama] Successfully unloaded model ${config.ollamaModel} from RAM.`);
+    } else {
+      console.warn(`[Ollama] Failed to unload model: Status ${response.status}`);
+    }
+  } catch (error) {
+    console.error(`[Ollama] Failed to send unload request: ${error.message}`);
+  }
+}
+
 // GET Settings
 app.get('/api/settings', async (req, res) => {
   const config = await loadConfig();
@@ -590,6 +613,18 @@ app.get('/api/fetch', async (req, res) => {
       // Save each email directly to DB as we parse it so if we stop or crash we don't lose progress
       await saveEmails([completeEmail]);
       analyzedEmails.push(completeEmail);
+
+      // Unload model from RAM every 20 emails to prevent memory leak/bloat
+      if ((i + 1) % 20 === 0 && i < messagesToAnalyze.length - 1) {
+        sendEvent('status', { message: `Releasing Ollama model from memory to optimize RAM (processed ${i + 1} emails)...` });
+        await unloadOllamaModel(config);
+      }
+    }
+
+    // Unload Ollama model from memory at the end of the batch
+    if (analyzedEmails.length > 0) {
+      sendEvent('status', { message: 'Releasing Ollama model from memory after final batch...' });
+      await unloadOllamaModel(config);
     }
 
     sendEvent('complete', { count: analyzedEmails.length });
