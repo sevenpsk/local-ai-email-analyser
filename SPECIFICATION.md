@@ -153,8 +153,8 @@ The pipeline uses two sequential local AI calls to ensure maximum classification
 
 ### Step 1: Classification Pass
 - **Purpose**: Fast category routing and metadata mapping.
-- **Request URL**: `${config.ollamaUrl}/api/chat`
-- **Options**: `temperature: 0.1`, `format: "json"`, `stream: false`
+- **Request URL**: `${config.ollamaUrl}/api/generate`
+- **Options**: `temperature: 0.1`, `format: "json"`, `stream: false`, system prompt passed in `system` field, user prompt in `prompt` field.
 - **System Prompt**:
   ```markdown
   You are an expert email routing assistant. Classify the incoming email into one of these categories:

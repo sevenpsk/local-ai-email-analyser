@@ -94,14 +94,14 @@ Create a unified `analyzeEmailWithOllama(config, subject, sender, plaintext)` ru
 *   **Plaintext Truncation**: Slice content to the first 3000 characters to keep local inference speed high.
 *   **Step 1: Classification Pass**:
     - Build classification System Prompt (Deals, Newsletters, Receipts, Event Invites, Priority Alerts, General).
-    - Query `${config.ollamaUrl}/api/chat` using `POST`.
-    - Parameters: `options.temperature = 0.1`, `format = "json"`, `stream = false`.
-    - Retrieve parsed classification: `{ category, priority, actionRequired, summary }`.
+    - Query `${config.ollamaUrl}/api/generate` using `POST`.
+    - Parameters: `options.temperature = 0.1`, `format = "json"`, `stream = false`, `system` (system prompt), `prompt` (user prompt).
+    - Retrieve parsed classification from `response` field: `{ category, priority, actionRequired, summary }`.
 *   **Step 2: Specialized Extraction Pass**:
     - Read the classified `category`. If the category is `"general"`, bypass Step 2 to save time.
     - Set up a switch statement or map to select the matching System Prompt and JSON schema for `deal`, `receipt`, `newsletter`, `event`, or `alert` (as specified in `SPECIFICATION.md`).
-    - Query `${config.ollamaUrl}/api/chat` using `POST` with the category prompt.
-    - Retrieve parsed extraction JSON.
+    - Query `${config.ollamaUrl}/api/generate` using `POST` with the category prompt in `system` field and email context in `prompt` field.
+    - Retrieve parsed extraction JSON from the returned `response` field.
 *   **Integration & Fallbacks**:
     - Wrap the calls in a robust `try/catch`. If an Ollama request times out (using a 20-second AbortController) or crashes, populate an error fallback block (e.g. category: `general`, priority: `medium`, reason: `Ollama timeout`) and continue processing.
     - Return the fully integrated analysis payload matching the database schema.

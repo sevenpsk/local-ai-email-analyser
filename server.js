@@ -49,7 +49,7 @@ async function saveConfig(config) {
 
 // Helper: Query Ollama
 async function analyzeEmailWithOllama(config, emailSubject, emailSender, emailText) {
-  const url = `${config.ollamaUrl}/api/chat`;
+  const url = `${config.ollamaUrl}/api/generate`;
   
   // Truncate email text to keep context manageable and fast (approx. 3000 chars)
   const truncatedText = emailText.slice(0, 3000);
@@ -87,10 +87,8 @@ ${truncatedText}`;
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: config.ollamaModel,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
+        prompt: userPrompt,
+        system: systemPrompt,
         options: {
           temperature: 0.1
         },
@@ -107,7 +105,7 @@ ${truncatedText}`;
     }
 
     const result = await response.json();
-    const parsedAnalysis = JSON.parse(result.message.content.trim());
+    const parsedAnalysis = JSON.parse(result.response.trim());
     
     // Ensure data shape is correct
     return {
