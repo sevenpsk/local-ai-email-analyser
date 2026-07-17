@@ -41,22 +41,21 @@ I am very open to recommendations and ideas from the open-source community!
 
 - **Frontend**: React + Vite (serving a beautifully designed interactive UI).
 - **Backend**: Express.js server (connecting to Gmail via `imapflow`, parsing emails with `mailparser`, and sending prompt jobs to Ollama).
-- **AI Model Orchestrator**: Ollama running locally (recommended models: `llama3.2:latest`, `gemma4`, or similar).
+- **AI Model Orchestrator**: Ollama running locally (recommended model: `llama3.2` or `llama3.2:latest`).
 - **Database**: Local JSON file cache (`data/emails.json`).
 
 ---
 
-## ⚡ Quick Start Setup
+## 📋 System Requirements & Prerequisite Setup
 
-Follow these simple steps to install and run the application natively on your system:
+Before running the application, make sure you configure your local environment:
 
-### Prerequisites
-1. **Ollama**: Installed and running on your host machine ([Download Ollama](https://ollama.ai)).
-2. **AI Model**: Download your target rating model via Ollama:
+1. **Ollama**: Download and install Ollama on your host machine ([Ollama Website](https://ollama.com)).
+2. **AI Model**: Pull the recommended model (`llama3.2`):
    ```bash
-   ollama run gemma4
+   ollama run llama3.2
    ```
-3. **Node.js**: Version 18 or higher installed on your computer.
+3. **Node.js**: Verify you have Node.js (version 18+) installed.
 4. **Google App Password**: You must generate a Google App Password to securely access your Gmail account over IMAP. 
    > [!NOTE]
    > Normal Gmail passwords will **not** work. Go to your **Google Account settings > Security > 2-Step Verification > App Passwords**, and create a new App Password (e.g., named "Email Analyser").
