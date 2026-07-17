@@ -9,6 +9,12 @@ export default defineConfig({
     host: true,
     watch: {
       ignored: ['**/config.json', '**/data/**']
+    },
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true
+      }
     }
   }
 })

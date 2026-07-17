@@ -5,7 +5,7 @@
   "imapPort": 993,
   "ollamaUrl": "http://localhost:11434",
   "ollamaModel": "llama3.2:latest",
-  "fetchLimit": 10,
+  "fetchLimit": 300,
   "fetchOnlyUnread": false,
   "useInbox": false
 }

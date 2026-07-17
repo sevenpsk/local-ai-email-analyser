@@ -28,7 +28,7 @@ async function loadConfig() {
     imapPort: 993,
     ollamaUrl: "http://localhost:11434",
     ollamaModel: "gemma4",
-    fetchLimit: 10,
+    fetchLimit: 300,
     fetchOnlyUnread: false,
     useInbox: false
   };
@@ -138,28 +138,7 @@ ${truncatedText}`;
   }
 }
 
-// Helper: Unload Ollama Model from memory (RAM)
-async function unloadOllamaModel(config) {
-  const url = `${config.ollamaUrl}/api/chat`;
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: config.ollamaModel,
-        messages: [],
-        keep_alive: 0
-      })
-    });
-    if (response.ok) {
-      console.log(`[Ollama] Successfully unloaded model ${config.ollamaModel} from RAM.`);
-    } else {
-      console.warn(`[Ollama] Failed to unload model: Status ${response.status}`);
-    }
-  } catch (error) {
-    console.error(`[Ollama] Failed to send unload request: ${error.message}`);
-  }
-}
+
 
 // GET Settings
 app.get('/api/settings', async (req, res) => {
@@ -186,10 +165,10 @@ app.post('/api/settings', async (req, res) => {
     ...currentConfig,
     email: newSettings.email ?? currentConfig.email,
     imapHost: newSettings.imapHost ?? currentConfig.imapHost,
-    imapPort: Number(newSettings.imapPort) ?? currentConfig.imapPort,
+    imapPort: newSettings.imapPort !== undefined && newSettings.imapPort !== null ? Number(newSettings.imapPort) : currentConfig.imapPort,
     ollamaUrl: newSettings.ollamaUrl ?? currentConfig.ollamaUrl,
     ollamaModel: newSettings.ollamaModel ?? currentConfig.ollamaModel,
-    fetchLimit: Number(newSettings.fetchLimit) ?? currentConfig.fetchLimit,
+    fetchLimit: newSettings.fetchLimit !== undefined && newSettings.fetchLimit !== null ? Number(newSettings.fetchLimit) : currentConfig.fetchLimit,
     fetchOnlyUnread: newSettings.fetchOnlyUnread !== undefined ? !!newSettings.fetchOnlyUnread : currentConfig.fetchOnlyUnread,
     useInbox: newSettings.useInbox !== undefined ? !!newSettings.useInbox : currentConfig.useInbox
   };
@@ -612,17 +591,6 @@ app.get('/api/fetch', async (req, res) => {
       await saveEmails([completeEmail]);
       analyzedEmails.push(completeEmail);
 
-      // Unload model from RAM every 20 emails to prevent memory leak/bloat
-      if ((i + 1) % 20 === 0 && i < messagesToAnalyze.length - 1) {
-        sendEvent('status', { message: `Releasing Ollama model from memory to optimize RAM (processed ${i + 1} emails)...` });
-        await unloadOllamaModel(config);
-      }
-    }
-
-    // Unload Ollama model from memory at the end of the batch
-    if (analyzedEmails.length > 0) {
-      sendEvent('status', { message: 'Releasing Ollama model from memory after final batch...' });
-      await unloadOllamaModel(config);
     }
 
     sendEvent('complete', { count: analyzedEmails.length });
