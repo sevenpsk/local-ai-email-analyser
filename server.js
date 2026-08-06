@@ -51,25 +51,61 @@ async function saveConfig(config) {
 async function analyzeEmailWithOllama(config, emailSubject, emailSender, emailText) {
   const url = `${config.ollamaUrl}/api/generate`;
   
-  // Truncate email text to keep context manageable and fast (approx. 3000 chars)
-  const truncatedText = emailText.slice(0, 3000);
+  // Clean email text: strip tracking URLs, CSS, invisible chars, then truncate
+  const cleanedText = (emailText || '')
+    // Remove long tracking/redirect URLs (keep short clean ones)
+    .replace(/https?:\/\/\S{80,}/g, '[link]')
+    // Remove CSS blocks (sometimes text/plain still contains inline styles)
+    .replace(/[\w.#-]+\s*\{[^}]*\}/g, '')
+    // Remove invisible Unicode chars used for preheader padding
+    .replace(/[\u200B-\u200D\u00AD\u034F\u061C\u2060\uFEFF\u180E]/g, '')
+    // Remove HTML entities for invisible chars (&zwnj; &zwj; &shy; &#x200B; etc.)
+    .replace(/&(zwnj|zwj|shy|#x200[B-D]|#x00AD|#xFEFF|#8203|#8204|#8205|#173);?/gi, '')
+    // Strip residual HTML tags that leak into text/plain
+    .replace(/<[^>]{0,500}>/g, '')
+    // Collapse excessive whitespace/newlines
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+  const truncatedText = cleanedText.slice(0, 3000);
   
   const systemPrompt = `You are a professional email marketing analyst. Your task is to analyze the content of a promotional email and rate how good of a deal/offer it is on a scale of 0 to 10.
 
-Criteria for rating:
-- 0 to 2: No deal or offer (general newsletter, product feature update, blog post, event invitation, normal newsletter).
-- 3 to 5: Standard or weak offer (e.g., 10-15% off, small discount with high spending threshold, generic sale).
-- 6 to 8: Substantial discount or high-value offer (e.g., 20-50% off, free shipping on any order, buy-one-get-one-free, bundle deals).
-- 9 to 10: Exceptional offer (free items with no strings attached, 70%+ off, pricing errors, or very rare high-value gifts).
+IMPORTANT: Look past the headline. Many promotional emails advertise a big number (e.g. "50% OFF!") but bury conditions that make the deal hard to redeem. Your rating must reflect the EFFECTIVE value to an average consumer, not the advertised headline.
+
+CONDITIONS THAT SHOULD LOWER THE RATING:
+- High minimum spend thresholds (e.g. "50% off when you spend $200+")
+- Discount only applies to a tiny subset of products or clearance items
+- Requires new membership sign-up, subscription, or credit card application
+- "Up to X% off" where most items are discounted far less
+- Stacking exclusions (e.g. "not valid on sale items, gift cards, or selected brands")
+- Very short expiry window (e.g. 24 hours) that pressures impulse buying
+- Multi-buy requirements (e.g. "buy 3 get 1 free" when you only need 1)
+
+QUALITIES THAT SHOULD BOOST THE RATING:
+- Easy to redeem with little or no conditions (e.g. bonus Flybuys/Everyday Rewards points on a normal shop at a reasonable spend threshold like $50-$100)
+- Universally applicable discounts (site-wide, no exclusions)
+- Free shipping with no minimum or a low minimum
+- Automatic cashback or statement credits
+- Genuine free gifts or samples with any purchase
+- Loyalty point multipliers on everyday spending categories (groceries, fuel)
+
+RATING SCALE:
+- 0 to 2: No actionable offer. Informational newsletter, blog digest, product announcement, event invite, or account notification.
+- 3 to 4: Weak or heavily conditional offer. The headline may look good but conditions make it impractical (e.g. "40% off with $300 min spend", "up to 60% off" on select clearance only).
+- 5 to 6: Decent offer with some conditions. Moderate discount that requires reasonable effort (e.g. 20% off with $80 spend, bonus loyalty points at $100 spend, standard seasonal sale).
+- 7 to 8: Strong, genuinely valuable offer. Meaningful savings that are easy to act on (e.g. 30%+ off site-wide, bonus loyalty points at everyday spend levels, free shipping no minimum, solid BOGO on popular items).
+- 9 to 10: Exceptional, rare offer. Outstanding value with minimal friction (e.g. 50%+ off site-wide with no exclusions, free high-value item no strings attached, massive loyalty point bonuses, pricing errors).
 
 You must return a JSON object with the following schema:
 {
   "rating": number (0-10),
-  "dealSummary": "1-sentence summary of the actual offer",
+  "dealSummary": "1-sentence summary of the ACTUAL offer including any key conditions",
   "discount": "extracted discount percentage or monetary value, e.g. '30% off' or '$20 free coupon'",
+  "conditionLevel": "none | low | medium | high (how conditional or restrictive the offer is)",
   "couponCodes": ["array of coupon/promo codes found, empty array if none"],
   "expirationDate": "expiration date or 'Unknown'",
-  "explanation": "brief 1-2 sentence justification for the rating based on the content"
+  "explanation": "brief 1-2 sentence justification. Mention any hidden conditions that affected the rating."
 }`;
 
   const userPrompt = `Subject: ${emailSubject}
@@ -79,7 +115,7 @@ Email Content:
 ${truncatedText}`;
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000); // 20-second timeout
+  const timeoutId = setTimeout(() => controller.abort(), 60000); // 60-second timeout (cold model loads can take 20-30s)
 
   try {
     const response = await fetch(url, {
@@ -110,7 +146,7 @@ ${truncatedText}`;
     
     // Ensure data shape is correct
     return {
-      rating: Number(parsedAnalysis.rating) ?? 0,
+      rating: isNaN(Number(parsedAnalysis.rating)) ? 0 : Number(parsedAnalysis.rating),
       dealSummary: parsedAnalysis.dealSummary || "No deal summarized.",
       discount: Array.isArray(parsedAnalysis.discount)
         ? parsedAnalysis.discount.join(', ')
@@ -120,6 +156,7 @@ ${truncatedText}`;
             ? String(parsedAnalysis.discount)
             : "None",
       couponCodes: Array.isArray(parsedAnalysis.couponCodes) ? parsedAnalysis.couponCodes : [],
+      conditionLevel: ['none','low','medium','high'].includes(parsedAnalysis.conditionLevel) ? parsedAnalysis.conditionLevel : 'unknown',
       expirationDate: parsedAnalysis.expirationDate || "Unknown",
       explanation: parsedAnalysis.explanation || "No explanation provided.",
       analyzedAt: new Date().toISOString()
@@ -643,9 +680,13 @@ app.use(express.static(buildPath));
 app.get('*', (req, res) => {
   // If request is not an API call, serve React index.html
   if (!req.url.startsWith('/api/')) {
-    res.sendFile(path.join(buildPath, 'index.html')).catch(() => {
-      // In development, dist might not exist yet, which is fine
-      res.status(404).send('Vite Dev Server is running. Please open the client port.');
+    res.sendFile(path.join(buildPath, 'index.html'), err => {
+      if (err) {
+        // In development, dist might not exist yet, which is fine
+        if (!res.headersSent) {
+          res.status(404).send('Vite Dev Server is running. Please open the client port.');
+        }
+      }
     });
   }
 });

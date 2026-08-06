@@ -711,7 +711,6 @@ export default function App() {
                     type="number" 
                     className="form-input"
                     min="1"
-                    max="100"
                     value={settings.fetchLimit}
                     onChange={(e) => setSettings({ ...settings, fetchLimit: Number(e.target.value) })}
                   />
