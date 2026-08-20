@@ -46,6 +46,62 @@ export default function App() {
   // Copied indicator feedback state
   const [copiedCode, setCopiedCode] = useState(null);
 
+  // Filter & Sort Emails (computed early so keyboard nav can reference it)
+  const filteredEmails = emails
+    .filter(email => {
+      const score = email.analysis?.rating ?? 0;
+      const matchesRating = score >= minRating;
+      
+      const term = searchQuery.toLowerCase();
+      const matchesSearch = 
+        email.subject.toLowerCase().includes(term) ||
+        email.fromName.toLowerCase().includes(term) ||
+        email.fromAddress.toLowerCase().includes(term) ||
+        (email.analysis?.dealSummary || '').toLowerCase().includes(term);
+
+      return matchesRating && matchesSearch;
+    })
+    .sort((a, b) => {
+      if (sortBy === 'date-desc') return new Date(b.date) - new Date(a.date);
+      if (sortBy === 'date-asc') return new Date(a.date) - new Date(b.date);
+      if (sortBy === 'rate-desc') return (b.analysis?.rating || 0) - (a.analysis?.rating || 0);
+      if (sortBy === 'rate-asc') return (a.analysis?.rating || 0) - (b.analysis?.rating || 0);
+      return 0;
+    });
+
+  // Keyboard navigation for modal (J = next, K = prev, Esc = close)
+  useEffect(() => {
+    if (!selectedEmail) return;
+
+    const handleKeyDown = (e) => {
+      // Don't intercept when typing in inputs
+      const tag = document.activeElement?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+      if (e.key === 'Escape') {
+        setSelectedEmail(null);
+        return;
+      }
+
+      if (e.key === 'j' || e.key === 'k') {
+        e.preventDefault();
+        setSelectedEmail(prev => {
+          const currentIdx = filteredEmails.findIndex(
+            em => (em.messageId || em.uid) === (prev?.messageId || prev?.uid)
+          );
+          if (currentIdx === -1) return prev;
+
+          const nextIdx = e.key === 'j' ? currentIdx + 1 : currentIdx - 1;
+          if (nextIdx < 0 || nextIdx >= filteredEmails.length) return prev;
+          return filteredEmails[nextIdx];
+        });
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [selectedEmail, filteredEmails]);
+
   // Load emails and settings on mount
   useEffect(() => {
     fetchEmails();
@@ -327,29 +383,6 @@ export default function App() {
     const subjectStr = e.subject || '';
     return subjectStr.toLowerCase().includes('free');
   }).length;
-
-  // Filter & Sort Emails
-  const filteredEmails = emails
-    .filter(email => {
-      const score = email.analysis?.rating ?? 0;
-      const matchesRating = score >= minRating;
-      
-      const term = searchQuery.toLowerCase();
-      const matchesSearch = 
-        email.subject.toLowerCase().includes(term) ||
-        email.fromName.toLowerCase().includes(term) ||
-        email.fromAddress.toLowerCase().includes(term) ||
-        (email.analysis?.dealSummary || '').toLowerCase().includes(term);
-
-      return matchesRating && matchesSearch;
-    })
-    .sort((a, b) => {
-      if (sortBy === 'date-desc') return new Date(b.date) - new Date(a.date);
-      if (sortBy === 'date-asc') return new Date(a.date) - new Date(b.date);
-      if (sortBy === 'rate-desc') return (b.analysis?.rating || 0) - (a.analysis?.rating || 0);
-      if (sortBy === 'rate-asc') return (a.analysis?.rating || 0) - (b.analysis?.rating || 0);
-      return 0;
-    });
 
   return (
     <div className="app-container">
@@ -777,21 +810,49 @@ export default function App() {
         )}
       </main>
 
-      {/* DETAIL DRAWER / SLIDE OVER VIEW */}
-      {selectedEmail && (
-        <div className="drawer-backdrop" onClick={() => setSelectedEmail(null)}>
-          <div className="drawer" onClick={(e) => e.stopPropagation()}>
-            <div className="drawer-header">
-              <div className="drawer-header-info">
+      {/* DETAIL MODAL (Centered Popup) */}
+      {selectedEmail && (() => {
+        const currentIdx = filteredEmails.findIndex(
+          em => (em.messageId || em.uid) === (selectedEmail.messageId || selectedEmail.uid)
+        );
+        const hasPrev = currentIdx > 0;
+        const hasNext = currentIdx < filteredEmails.length - 1;
+
+        return (
+        <div className="modal-backdrop" onClick={() => setSelectedEmail(null)}>
+          <div className="modal-popup" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-header-info">
                 <h2>{selectedEmail.subject}</h2>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                  From: <strong>{selectedEmail.fromName}</strong> ({selectedEmail.fromAddress}) // {formatDate(selectedEmail.date)}
+                  From: <strong>{selectedEmail.fromName}</strong> ({selectedEmail.fromAddress}) · {formatDate(selectedEmail.date)}
                 </p>
               </div>
-              <button className="drawer-close" onClick={() => setSelectedEmail(null)}>✕</button>
+              <div className="modal-nav-group">
+                <button
+                  className="modal-nav-btn"
+                  title="Previous email (K)"
+                  disabled={!hasPrev}
+                  onClick={() => hasPrev && setSelectedEmail(filteredEmails[currentIdx - 1])}
+                >
+                  ‹
+                </button>
+                <span className="modal-position-indicator">
+                  {currentIdx + 1} / {filteredEmails.length}
+                </span>
+                <button
+                  className="modal-nav-btn"
+                  title="Next email (J)"
+                  disabled={!hasNext}
+                  onClick={() => hasNext && setSelectedEmail(filteredEmails[currentIdx + 1])}
+                >
+                  ›
+                </button>
+                <button className="modal-close" onClick={() => setSelectedEmail(null)}>✕</button>
+              </div>
             </div>
 
-            <div className="drawer-content">
+            <div className="modal-content">
               {/* Left Panel: AI Review */}
               <div className="ai-analysis-panel">
                 <div className="ai-header-badge">
@@ -890,9 +951,16 @@ export default function App() {
                 </div>
               </div>
             </div>
+
+            <div className="modal-footer">
+              <span className="kbd-hint"><kbd className="kbd">K</kbd> Previous</span>
+              <span className="kbd-hint"><kbd className="kbd">J</kbd> Next</span>
+              <span className="kbd-hint"><kbd className="kbd">Esc</kbd> Close</span>
+            </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* STREAM FETCHING PROGRESS BAR OVERLAY */}
       {fetchProgress.active && (
