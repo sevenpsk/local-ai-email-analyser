@@ -27,9 +27,6 @@ let cachedEmails = null;
 
 export async function getEmails() {
   await ensureDbExists();
-  if (cachedEmails !== null) {
-    return cachedEmails;
-  }
   try {
     const data = await fs.readFile(DB_FILE, 'utf-8');
     cachedEmails = JSON.parse(data);
@@ -60,6 +57,24 @@ export async function saveEmails(emailsToSave) {
     return cachedEmails;
   } catch (error) {
     console.error('Error saving emails to DB:', error);
+    throw error;
+  }
+}
+
+export async function updateEmailAnalysis(key, analysis) {
+  await ensureDbExists();
+  try {
+    const currentEmails = await getEmails();
+    const strKey = key.toString();
+    const target = currentEmails.find(e => (e.messageId === strKey) || (e.uid && e.uid.toString() === strKey));
+    if (!target) {
+      return null;
+    }
+    target.analysis = analysis;
+    await fs.writeFile(DB_FILE, JSON.stringify(currentEmails, null, 2), 'utf-8');
+    return target;
+  } catch (error) {
+    console.error('Error updating email analysis in DB:', error);
     throw error;
   }
 }

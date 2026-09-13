@@ -27,13 +27,21 @@ I am very open to recommendations and ideas from the open-source community!
 ## ✨ Features
 
 - **🔐 Local & Secure**: No third-party AI APIs used. All email scanning, analysis, and rated databases are processed and stored locally on your machine.
+- **⚡ Instant Ingestion & Decoupled Skimming**: Emails load into the dashboard in seconds (~2-3s). You can immediately read raw text snippets and open full HTML emails while the local AI runs evaluations in the background.
+- **🔄 Non-Blocking Background Analysis Widget**: A floating progress widget docked at the bottom right shows live progress, currently evaluated subject, and allows pausing or manual deal rating anytime (`⚡ Rate Pending`).
 - **🏷️ Gmail Intelligent Category Scanning**: Utilizes native Gmail-specific IMAP query filters (e.g., scanning the `Promotions` category or searching unread emails).
 - **🤖 Ollama Powered Rating**: Automatically rates promotional deals on a scale of `0` to `10` and extracts key information:
   - **Deal Summary** (1-sentence overview)
   - **Discount/Coupon Value** (e.g., "30% off" or "$20 coupon")
   - **Promo Codes**
   - **Expiration Dates**
-- **📊 Interactive Dashboard**: A premium, modern React frontend to view, filter, clear, and test settings.
+  - **Automatic RAM cleanup**: Unloads models from memory (`keep_alive: 0`) once queues finish.
+- **⌨️ Keyboard Navigation & Maximized Reading Area**:
+  - <kbd>J</kbd> / <kbd>K</kbd>: Rapidly flick to the next or previous email.
+  - <kbd>A</kbd>: Toggle / collapse the AI review panel to give the original email maximum width and height.
+  - <kbd>Esc</kbd>: Close modal.
+- **📊 Interactive Dashboard**: A premium, modern React frontend to view, filter by rating, search offers, clear cache, and test settings.
+- **🧪 Built-In Automated Test Suite**: Native unit and integration test coverage (`npm test`).
 
 ---
 
@@ -83,7 +91,13 @@ Before running the application, make sure you configure your local environment:
    ```
    This command starts the Express backend (port `3001`) and the Vite React server concurrently.
 
-5. **Access Dashboard & Configure Settings**:
+5. **Run Automated Tests**:
+   ```bash
+   npm test
+   ```
+   Runs the full suite of unit and integration tests verifying database persistence, search/filter algorithms, and the end-to-end ingestion flow.
+
+6. **Access Dashboard & Configure Settings**:
    - Open your browser and navigate to: **`http://localhost:5173`**
    - Click on the **Settings** tab to enter your Gmail address, Google App Password, and target Ollama model.
    - The web UI will automatically save and write these configurations to your local `config.json` file for you!

@@ -10,7 +10,8 @@
     "client": "vite",
     "dev": "concurrently --kill-others \"npm run server\" \"npm run client\"",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test --test-concurrency=1 tests/*.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

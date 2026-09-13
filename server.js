@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
-import { getEmails, saveEmails, clearAllEmails } from './db.js';
+import { getEmails, saveEmails, clearAllEmails, updateEmailAnalysis } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -195,9 +195,148 @@ async function unloadOllamaModel(config) {
       console.warn(`[Ollama] Failed to unload model: Status ${response.status}`);
     }
   } catch (error) {
-    console.error(`[Ollama] Failed to send unload request: ${error.message}`);
+    console.warn(`[Ollama] Error unloading model: ${error.message}`);
   }
 }
+
+// Background Analysis Manager
+class AnalysisManager {
+  constructor() {
+    this.isAnalyzing = false;
+    this.isFetching = false;
+    this.currentSubject = '';
+    this.current = 0;
+    this.total = 0;
+    this.subscribers = new Set();
+    this.abortController = null;
+  }
+
+  subscribe(res) {
+    this.subscribers.add(res);
+    res.on('close', () => {
+      this.subscribers.delete(res);
+    });
+  }
+
+  broadcast(event, data) {
+    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    for (const res of this.subscribers) {
+      try {
+        res.write(payload);
+      } catch (err) {
+        this.subscribers.delete(res);
+      }
+    }
+  }
+
+  getStatus() {
+    return {
+      isAnalyzing: this.isAnalyzing,
+      isFetching: this.isFetching,
+      currentSubject: this.currentSubject,
+      current: this.current,
+      total: this.total
+    };
+  }
+
+  stop() {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+    this.isAnalyzing = false;
+    this.currentSubject = '';
+    this.broadcast('status', { message: 'Background AI analysis stopped.' });
+    this.broadcast('complete', { stopped: true });
+  }
+
+  async startAnalysisQueue(config) {
+    if (this.isAnalyzing) {
+      console.log('[AnalysisManager] Analysis queue already running.');
+      return;
+    }
+
+    const allEmails = await getEmails();
+    // Filter emails without analysis or with pending status
+    const pendingEmails = allEmails.filter(e => !e.analysis || e.analysis.pending);
+
+    if (pendingEmails.length === 0) {
+      this.broadcast('status', { message: 'All emails already analyzed.' });
+      this.broadcast('complete', { count: 0, total: 0 });
+      return;
+    }
+
+    this.isAnalyzing = true;
+    this.total = pendingEmails.length;
+    this.current = 0;
+    this.abortController = new AbortController();
+
+    this.broadcast('status', {
+      message: `Starting background AI analysis for ${this.total} deals...`,
+      phase: 'analyzing',
+      total: this.total
+    });
+
+    try {
+      for (let i = 0; i < pendingEmails.length; i++) {
+        if (this.abortController?.signal.aborted) {
+          break;
+        }
+
+        const email = pendingEmails[i];
+        this.current = i + 1;
+        this.currentSubject = email.subject || '(No Subject)';
+
+        this.broadcast('progress', {
+          current: this.current,
+          total: this.total,
+          subject: this.currentSubject,
+          message: `Evaluating deal for "${this.currentSubject}"...`
+        });
+
+        const analysis = await analyzeEmailWithOllama(
+          config,
+          email.subject,
+          `${email.fromName} <${email.fromAddress}>`,
+          email.text
+        );
+
+        const updatedEmail = await updateEmailAnalysis(email.messageId || email.uid, analysis);
+
+        this.broadcast('email-analyzed', {
+          email: updatedEmail || { ...email, analysis },
+          current: this.current,
+          total: this.total
+        });
+
+        // Optimize RAM by unloading model every 30 emails
+        if ((i + 1) % 30 === 0 && i < pendingEmails.length - 1) {
+          this.broadcast('status', { message: `Optimizing system memory (releasing Ollama RAM after ${i + 1} emails)...` });
+          await unloadOllamaModel(config);
+        }
+      }
+
+      if (pendingEmails.length > 0 && !this.abortController?.signal.aborted) {
+        await unloadOllamaModel(config);
+      }
+
+      this.broadcast('complete', {
+        count: this.current,
+        total: this.total,
+        message: 'Background deal analysis complete!'
+      });
+    } catch (err) {
+      console.error('[AnalysisManager] Error in analysis queue:', err);
+      this.broadcast('fetch-error', { message: err.message });
+    } finally {
+      this.isAnalyzing = false;
+      this.currentSubject = '';
+      this.abortController = null;
+    }
+  }
+}
+
+const analysisManager = new AnalysisManager();
 
 // GET Settings
 app.get('/api/settings', async (req, res) => {
@@ -310,11 +449,49 @@ app.get('/api/emails', async (req, res) => {
 // CLEAR Cached Emails
 app.post('/api/emails/clear', async (req, res) => {
   try {
+    analysisManager.stop();
     const cleared = await clearAllEmails();
     res.json({ success: true, emails: cleared });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
+});
+
+// GET Analysis Status
+app.get('/api/analysis-status', async (req, res) => {
+  const status = analysisManager.getStatus();
+  const allEmails = await getEmails();
+  const pendingCount = allEmails.filter(e => !e.analysis || e.analysis.pending).length;
+  res.json({ ...status, pendingCount, totalEmails: allEmails.length });
+});
+
+// GET Analysis Stream (SSE for background analysis)
+app.get('/api/analysis-stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  
+  const status = analysisManager.getStatus();
+  res.write(`event: status\ndata: ${JSON.stringify(status)}\n\n`);
+
+  analysisManager.subscribe(res);
+});
+
+// POST Trigger Background Analysis on Pending Emails
+app.post('/api/analyze-pending', async (req, res) => {
+  const config = await loadConfig();
+  if (analysisManager.isAnalyzing) {
+    return res.json({ success: true, message: 'Analysis already in progress' });
+  }
+  // Start in background without awaiting completion
+  analysisManager.startAnalysisQueue(config);
+  res.json({ success: true, message: 'Background deal analysis started' });
+});
+
+// POST Stop Background Analysis
+app.post('/api/analysis/stop', (req, res) => {
+  analysisManager.stop();
+  res.json({ success: true, message: 'Background analysis stopped' });
 });
 
 // MARK ALL AS READ IN GMAIL
@@ -613,65 +790,32 @@ app.get('/api/fetch', async (req, res) => {
 
     await client.logout();
 
-    if (messagesToAnalyze.length === 0) {
-      sendEvent('status', { message: 'All fetched emails have already been analyzed!' });
-      sendEvent('complete', { count: 0 });
-      return res.end();
-    }
-
-    sendEvent('status', { message: `Found ${messagesToAnalyze.length} new emails to analyze. Starting local AI processing...` });
-
-    // Reverse so we analyze oldest to newest (or newest first, but let's go one by one and stream updates)
-    // We reverse it to preserve chronological sorting easily when saving
-    messagesToAnalyze.reverse();
-
-    const analyzedEmails = [];
-    for (let i = 0; i < messagesToAnalyze.length; i++) {
-      const email = messagesToAnalyze[i];
-      sendEvent('progress', { 
-        current: i + 1, 
-        total: messagesToAnalyze.length, 
-        subject: email.subject 
+    if (messagesToAnalyze.length > 0) {
+      // Reverse to preserve chronological sorting easily when saving
+      messagesToAnalyze.reverse();
+      // PHASE 1: Save newly fetched emails directly to DB immediately!
+      await saveEmails(messagesToAnalyze);
+      sendEvent('status', { message: `Saved ${messagesToAnalyze.length} new promotional emails to local dashboard.` });
+      sendEvent('emails-loaded', {
+        count: messagesToAnalyze.length,
+        message: `Loaded ${messagesToAnalyze.length} emails into dashboard.`
       });
-
-      const analysis = await analyzeEmailWithOllama(
-        config, 
-        email.subject, 
-        `${email.fromName} <${email.fromAddress}>`, 
-        email.text
-      );
-
-      const completeEmail = {
-        ...email,
-        analysis
-      };
-
-      // Save each email directly to DB as we parse it so if we stop or crash we don't lose progress
-      await saveEmails([completeEmail]);
-      analyzedEmails.push(completeEmail);
-
-      // Reset RAM creep by unloading model every 30 emails during a long scan
-      if ((i + 1) % 30 === 0 && i < messagesToAnalyze.length - 1) {
-        sendEvent('status', { message: `Optimizing system memory (releasing Ollama RAM after ${i + 1} emails)...` });
-        await unloadOllamaModel(config);
-      }
+    } else {
+      sendEvent('status', { message: 'No new emails to download from Gmail.' });
+      sendEvent('emails-loaded', { count: 0, message: 'All emails up to date.' });
     }
 
-    // Unload Ollama model from memory at the end of the batch to free up RAM
-    if (analyzedEmails.length > 0) {
-      sendEvent('status', { message: 'Releasing Ollama model from memory after final batch...' });
-      await unloadOllamaModel(config);
-    }
-
-    sendEvent('complete', { count: analyzedEmails.length });
-    res.end();
+    // PHASE 2: Start background AI analysis queue for any unanalyzed deals
+    analysisManager.subscribe(res);
+    analysisManager.startAnalysisQueue(config);
 
   } catch (error) {
-    console.error('Fetch and analyze error:', error);
+    console.error('Fetch error:', error);
     sendEvent('fetch-error', { message: `Failed: ${error.message}` });
     res.end();
   }
 });
+
 
 // Serve frontend assets in production (if built)
 const buildPath = path.join(__dirname, 'dist');

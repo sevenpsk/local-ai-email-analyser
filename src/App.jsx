@@ -34,42 +34,59 @@ export default function App() {
   const [ollamaTestStatus, setOllamaTestStatus] = useState({ type: '', message: '' });
   const [isMarkingRead, setIsMarkingRead] = useState(false);
 
-  // Fetching progression overlay states
+  // Fetching progression widget states (non-blocking)
   const [fetchProgress, setFetchProgress] = useState({
     active: false,
+    phase: 'idle', // 'fetching' | 'analyzing' | 'idle'
     status: '',
     current: 0,
     total: 0,
     subject: ''
   });
 
+  const activeEventSourceRef = useRef(null);
+
   // Copied indicator feedback state
   const [copiedCode, setCopiedCode] = useState(null);
+  // Toggle state to maximize email view by collapsing AI panel
+  const [showAiPanel, setShowAiPanel] = useState(true);
 
   // Filter & Sort Emails (computed early so keyboard nav can reference it)
   const filteredEmails = emails
     .filter(email => {
-      const score = email.analysis?.rating ?? 0;
-      const matchesRating = score >= minRating;
+      const isAnalyzed = email.analysis && !email.analysis.pending;
+      const score = isAnalyzed ? (email.analysis.rating ?? 0) : 0;
+      // When minRating is 0, show all emails (both analyzed and pending).
+      // When minRating > 0, show only analyzed emails meeting the rating threshold.
+      const matchesRating = minRating === 0 ? true : (isAnalyzed && score >= minRating);
       
       const term = searchQuery.toLowerCase();
       const matchesSearch = 
         email.subject.toLowerCase().includes(term) ||
         email.fromName.toLowerCase().includes(term) ||
         email.fromAddress.toLowerCase().includes(term) ||
-        (email.analysis?.dealSummary || '').toLowerCase().includes(term);
+        (email.analysis?.dealSummary || '').toLowerCase().includes(term) ||
+        (!isAnalyzed && (email.text || '').toLowerCase().includes(term));
 
       return matchesRating && matchesSearch;
     })
     .sort((a, b) => {
       if (sortBy === 'date-desc') return new Date(b.date) - new Date(a.date);
       if (sortBy === 'date-asc') return new Date(a.date) - new Date(b.date);
-      if (sortBy === 'rate-desc') return (b.analysis?.rating || 0) - (a.analysis?.rating || 0);
-      if (sortBy === 'rate-asc') return (a.analysis?.rating || 0) - (b.analysis?.rating || 0);
+      if (sortBy === 'rate-desc') {
+        const scoreA = (a.analysis && !a.analysis.pending) ? (a.analysis.rating || 0) : -1;
+        const scoreB = (b.analysis && !b.analysis.pending) ? (b.analysis.rating || 0) : -1;
+        return scoreB - scoreA;
+      }
+      if (sortBy === 'rate-asc') {
+        const scoreA = (a.analysis && !a.analysis.pending) ? (a.analysis.rating || 0) : 99;
+        const scoreB = (b.analysis && !b.analysis.pending) ? (b.analysis.rating || 0) : 99;
+        return scoreA - scoreB;
+      }
       return 0;
     });
 
-  // Keyboard navigation for modal (J = next, K = prev, Esc = close)
+  // Keyboard navigation for modal (J = next, K = prev, Esc = close, A = toggle AI panel)
   useEffect(() => {
     if (!selectedEmail) return;
 
@@ -80,6 +97,12 @@ export default function App() {
 
       if (e.key === 'Escape') {
         setSelectedEmail(null);
+        return;
+      }
+
+      if (e.key === 'a' || e.key === 'A') {
+        e.preventDefault();
+        setShowAiPanel(prev => !prev);
         return;
       }
 
@@ -106,6 +129,7 @@ export default function App() {
   useEffect(() => {
     fetchEmails();
     fetchSettings();
+    checkAnalysisStatus();
   }, []);
 
   const fetchEmails = async () => {
@@ -222,7 +246,140 @@ export default function App() {
     }
   };
 
-  // Trigger server-side fetch with live progress monitoring (SSE)
+  // Check if background analysis is already running on server (e.g. after refresh)
+  const checkAnalysisStatus = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/analysis-status`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.isAnalyzing) {
+          setFetchProgress({
+            active: true,
+            phase: 'analyzing',
+            status: `Analyzing: "${data.currentSubject || ''}"`,
+            current: data.current || 0,
+            total: data.total || 0,
+            subject: data.currentSubject || ''
+          });
+
+          if (activeEventSourceRef.current) {
+            activeEventSourceRef.current.close();
+          }
+          const eventSource = new EventSource(`${API_BASE}/analysis-stream`);
+          activeEventSourceRef.current = eventSource;
+          attachSseListeners(eventSource);
+        }
+      }
+    } catch (err) {
+      console.warn('Could not query analysis status:', err.message);
+    }
+  };
+
+  // Helper to attach listeners to any SSE stream (fetch or analysis-stream)
+  const attachSseListeners = (eventSource) => {
+    eventSource.addEventListener('status', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setFetchProgress(prev => ({ 
+          ...prev, 
+          status: data.message || prev.status,
+          total: data.total !== undefined ? data.total : prev.total,
+          phase: data.phase || prev.phase
+        }));
+      } catch (err) {}
+    });
+
+    // Phase 1: Raw emails loaded into database immediately!
+    eventSource.addEventListener('emails-loaded', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        fetchEmails(); // Dashboard immediately updates so user can skim!
+        setFetchProgress(prev => ({
+          ...prev,
+          phase: 'analyzing',
+          status: data.count > 0 
+            ? `Loaded ${data.count} emails! AI analyzing deals in background...` 
+            : 'All emails up to date. Checking pending deals...'
+        }));
+      } catch (err) {}
+    });
+
+    // Phase 2: Progress of AI evaluation
+    eventSource.addEventListener('progress', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setFetchProgress(prev => ({
+          ...prev,
+          phase: 'analyzing',
+          status: `Evaluating: "${data.subject || ''}"`,
+          current: data.current,
+          total: data.total,
+          subject: data.subject
+        }));
+      } catch (err) {}
+    });
+
+    // Real-time update for each analyzed email
+    eventSource.addEventListener('email-analyzed', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        const updated = data.email;
+        if (updated) {
+          setEmails(prev => prev.map(em => 
+            ((em.messageId && em.messageId === updated.messageId) || (em.uid && em.uid === updated.uid)) ? updated : em
+          ));
+          setSelectedEmail(prev => {
+            if (!prev) return null;
+            if ((prev.messageId && prev.messageId === updated.messageId) || (prev.uid && prev.uid === updated.uid)) {
+              return updated;
+            }
+            return prev;
+          });
+        }
+      } catch (err) {}
+    });
+
+    eventSource.addEventListener('complete', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setFetchProgress(prev => ({
+          ...prev,
+          status: data.stopped ? 'Background analysis paused.' : `Analysis complete (${data.count || 0} deals evaluated).`,
+          active: false
+        }));
+        if (activeEventSourceRef.current) {
+          activeEventSourceRef.current.close();
+          activeEventSourceRef.current = null;
+        }
+        fetchEmails();
+      } catch (err) {}
+    });
+
+    eventSource.addEventListener('fetch-error', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        alert(`Error: ${data.message}`);
+        setFetchProgress(prev => ({ ...prev, active: false }));
+        if (activeEventSourceRef.current) {
+          activeEventSourceRef.current.close();
+          activeEventSourceRef.current = null;
+        }
+        fetchEmails();
+      } catch (err) {}
+    });
+
+    eventSource.addEventListener('error', (e) => {
+      if (eventSource.readyState === EventSource.CLOSED) {
+        setFetchProgress(prev => ({ ...prev, active: false }));
+        if (activeEventSourceRef.current) {
+          activeEventSourceRef.current.close();
+          activeEventSourceRef.current = null;
+        }
+      }
+    });
+  };
+
+  // Trigger server-side fetch with fast ingestion and background AI queue
   const triggerEmailFetch = () => {
     if (!settings.email || (!settings.hasPassword && !passwordInput)) {
       alert('Please set up your Gmail email and Google App Password in the Settings tab first.');
@@ -230,71 +387,72 @@ export default function App() {
       return;
     }
 
+    if (activeEventSourceRef.current) {
+      activeEventSourceRef.current.close();
+    }
+
     setFetchProgress({
       active: true,
-      status: 'Initializing local AI analyser engine...',
+      phase: 'fetching',
+      status: 'Connecting to Gmail and downloading promotional emails...',
       current: 0,
       total: 0,
       subject: ''
     });
 
     const eventSource = new EventSource(`${API_BASE}/fetch`);
+    activeEventSourceRef.current = eventSource;
+    attachSseListeners(eventSource);
+  };
 
-    eventSource.addEventListener('status', (e) => {
-      const data = JSON.parse(e.data);
-      setFetchProgress(prev => ({ ...prev, status: data.message }));
-    });
-
-    eventSource.addEventListener('progress', (e) => {
-      const data = JSON.parse(e.data);
-      setFetchProgress(prev => ({
-        ...prev,
-        status: `Processing promotional content with Local AI...`,
-        current: data.current,
-        total: data.total,
-        subject: data.subject
-      }));
-    });
-
-    eventSource.addEventListener('complete', (e) => {
-      const data = JSON.parse(e.data);
-      setFetchProgress(prev => ({
-        ...prev,
-        status: `Analysis completed! Processed ${data.count} new deals.`,
-        current: prev.total,
-        active: false
-      }));
-      eventSource.close();
-      fetchEmails();
-    });
-
-    eventSource.addEventListener('fetch-error', (e) => {
-      const data = JSON.parse(e.data);
-      alert(`Error scanning emails: ${data.message}`);
-      setFetchProgress(prev => ({ ...prev, active: false }));
-      eventSource.close();
-      fetchEmails();
-    });
-
-    eventSource.addEventListener('error', (e) => {
-      // General connection failure
-      if (eventSource.readyState === EventSource.CLOSED) {
-        alert("Error scanning emails: Connection to the local backend server was lost.");
-        setFetchProgress(prev => ({ ...prev, active: false }));
-        eventSource.close();
-        fetchEmails();
+  // Trigger background analysis on existing unanalyzed emails in DB
+  const triggerAnalyzePending = async () => {
+    try {
+      if (activeEventSourceRef.current) {
+        activeEventSourceRef.current.close();
       }
-    });
 
-    // Fallback: close connection if the user leaves
-    return () => {
-      eventSource.close();
-    };
+      setFetchProgress({
+        active: true,
+        phase: 'analyzing',
+        status: 'Starting background deal analysis...',
+        current: 0,
+        total: 0,
+        subject: ''
+      });
+
+      await fetch(`${API_BASE}/analyze-pending`, { method: 'POST' });
+
+      const eventSource = new EventSource(`${API_BASE}/analysis-stream`);
+      activeEventSourceRef.current = eventSource;
+      attachSseListeners(eventSource);
+    } catch (err) {
+      console.error('Failed to trigger background analysis:', err);
+    }
+  };
+
+  // Stop / pause background analysis
+  const stopBackgroundAnalysis = async () => {
+    try {
+      await fetch(`${API_BASE}/analysis/stop`, { method: 'POST' });
+      setFetchProgress(prev => ({ ...prev, active: false, status: 'Background analysis paused.' }));
+      if (activeEventSourceRef.current) {
+        activeEventSourceRef.current.close();
+        activeEventSourceRef.current = null;
+      }
+    } catch (err) {
+      console.error('Failed to stop background analysis:', err);
+    }
   };
 
   const clearAllCachedData = async () => {
     if (confirm('Are you sure you want to clear your local cache? This will delete all downloaded emails and AI evaluations.')) {
       try {
+        if (activeEventSourceRef.current) {
+          activeEventSourceRef.current.close();
+          activeEventSourceRef.current = null;
+        }
+        setFetchProgress(prev => ({ ...prev, active: false }));
         const res = await fetch(`${API_BASE}/emails/clear`, { method: 'POST' });
         if (res.ok) {
           setEmails([]);
@@ -305,6 +463,7 @@ export default function App() {
       }
     }
   };
+
 
   const markAllEmailsAsRead = async () => {
     if (emails.length === 0) {
@@ -359,13 +518,16 @@ export default function App() {
   };
 
   // Compute live statistics for widgets
-  const totalAnalyzed = emails.length;
+  const totalEmailsCount = emails.length;
+  const pendingEmailsCount = emails.filter(e => !e.analysis || e.analysis.pending).length;
+  const analyzedEmailsList = emails.filter(e => e.analysis && !e.analysis.pending);
+  const totalAnalyzed = analyzedEmailsList.length;
   const averageRating = totalAnalyzed > 0 
-    ? (emails.reduce((sum, e) => sum + (e.analysis?.rating || 0), 0) / totalAnalyzed).toFixed(1)
+    ? (analyzedEmailsList.reduce((sum, e) => sum + (e.analysis?.rating || 0), 0) / totalAnalyzed).toFixed(1)
     : '0.0';
   
-  const hotDealsCount = emails.filter(e => (e.analysis?.rating || 0) >= 8).length;
-  const freebiesCount = emails.filter(e => {
+  const hotDealsCount = analyzedEmailsList.filter(e => (e.analysis?.rating || 0) >= 8).length;
+  const freebiesCount = analyzedEmailsList.filter(e => {
     const rating = e.analysis?.rating || 0;
     if (rating >= 9) return true;
 
@@ -415,7 +577,11 @@ export default function App() {
           <h4>SYSTEM STATS</h4>
           <div className="stat-row">
             <span className="stat-label">Total Emails</span>
-            <span className="stat-value">{totalAnalyzed}</span>
+            <span className="stat-value">{totalEmailsCount}</span>
+          </div>
+          <div className="stat-row">
+            <span className="stat-label">Pending AI</span>
+            <span className="stat-value text-cyan">{pendingEmailsCount}</span>
           </div>
           <div className="stat-row">
             <span className="stat-label">Avg Deal Rating</span>
@@ -443,7 +609,7 @@ export default function App() {
                 <h2>Local Email Dashboard</h2>
                 <p>Browse promotional deals evaluated in real-time by your local Gemma 4 AI.</p>
               </div>
-              <div style={{ display: 'flex', gap: '1rem' }}>
+              <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
                 <button 
                   className="btn" 
                   onClick={markAllEmailsAsRead}
@@ -456,11 +622,21 @@ export default function App() {
                     🗑️ Clear Cache
                   </button>
                 )}
-                <button className="btn btn-primary" onClick={triggerEmailFetch}>
-                  📥 Scan & Rate Emails
+                {pendingEmailsCount > 0 && !fetchProgress.active && (
+                  <button className="btn" onClick={triggerAnalyzePending} title="Evaluate queued deals with local AI">
+                    ⚡ Rate Pending ({pendingEmailsCount})
+                  </button>
+                )}
+                <button 
+                  className="btn btn-primary" 
+                  onClick={triggerEmailFetch}
+                  disabled={fetchProgress.active && fetchProgress.phase === 'fetching'}
+                >
+                  {fetchProgress.active && fetchProgress.phase === 'fetching' ? '⏳ Fetching...' : '📥 Scan & Load Emails'}
                 </button>
               </div>
             </div>
+
 
             {/* Dashboard widgets */}
             <section className="stats-grid">
@@ -562,13 +738,14 @@ export default function App() {
                   </div>
                 ) : (
                   filteredEmails.map(email => {
-                    const rating = email.analysis?.rating ?? 0;
-                    const styleMeta = getRateClass(rating);
+                    const isAnalyzed = email.analysis && !email.analysis.pending;
+                    const rating = isAnalyzed ? (email.analysis.rating ?? 0) : null;
+                    const styleMeta = isAnalyzed ? getRateClass(rating) : null;
 
                     return (
                       <article 
                         key={email.messageId || email.uid} 
-                        className="email-card"
+                        className={`email-card ${!isAnalyzed ? 'pending-card' : ''}`}
                         onClick={() => setSelectedEmail(email)}
                       >
                         <div className="email-card-header">
@@ -581,40 +758,61 @@ export default function App() {
                               <span className="email-date">{formatDate(email.date)}</span>
                             </div>
                           </div>
-                          <div 
-                            className={`rating-badge ${styleMeta.class}`}
-                            style={{ background: styleMeta.gradient }}
-                            title={styleMeta.name}
-                          >
-                            {rating}
-                          </div>
+                          {isAnalyzed ? (
+                            <div 
+                              className={`rating-badge ${styleMeta.class}`}
+                              style={{ background: styleMeta.gradient }}
+                              title={styleMeta.name}
+                            >
+                              {rating}
+                            </div>
+                          ) : (
+                            <div 
+                              className="rating-badge pending-badge"
+                              title="Queued for local AI evaluation"
+                            >
+                              ⏳ Queued
+                            </div>
+                          )}
                         </div>
 
                         <div className="email-card-body">
                           <h4 className="email-subject">{email.subject}</h4>
                           <p className="email-summary">
-                            {email.analysis?.dealSummary || "No AI analysis performed."}
+                            {isAnalyzed 
+                              ? (email.analysis?.dealSummary || "No deal found.")
+                              : (email.text ? (email.text.slice(0, 135) + '...') : "Queued for local AI analysis...")
+                            }
                           </p>
                         </div>
 
                         <div className="email-card-footer">
-                          {email.analysis?.discount && email.analysis?.discount !== 'None' ? (
-                            <span className="discount-tag">
-                              🏷️ {email.analysis.discount}
-                            </span>
-                          ) : (
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Newsletter</span>
-                          )}
+                          {isAnalyzed ? (
+                            <>
+                              {email.analysis?.discount && email.analysis?.discount !== 'None' ? (
+                                <span className="discount-tag">
+                                  🏷️ {email.analysis.discount}
+                                </span>
+                              ) : (
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Newsletter</span>
+                              )}
 
-                          {email.analysis?.couponCodes && email.analysis.couponCodes.length > 0 && (
-                            <span className="coupon-pill">
-                              🎫 {email.analysis.couponCodes[0]}
+                              {email.analysis?.couponCodes && email.analysis.couponCodes.length > 0 && (
+                                <span className="coupon-pill">
+                                  🎫 {email.analysis.couponCodes[0]}
+                                </span>
+                              )}
+                            </>
+                          ) : (
+                            <span className="pending-pill">
+                              ⚡ Skim Ready
                             </span>
                           )}
                         </div>
                       </article>
                     );
                   })
+
                 )}
               </section>
             )}
@@ -817,18 +1015,47 @@ export default function App() {
         );
         const hasPrev = currentIdx > 0;
         const hasNext = currentIdx < filteredEmails.length - 1;
+        const isAnalyzed = selectedEmail.analysis && !selectedEmail.analysis.pending;
+        const rating = isAnalyzed ? (selectedEmail.analysis.rating ?? 0) : null;
+        const styleMeta = isAnalyzed ? getRateClass(rating) : null;
 
         return (
         <div className="modal-backdrop" onClick={() => setSelectedEmail(null)}>
           <div className="modal-popup" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-header-info">
-                <h2>{selectedEmail.subject}</h2>
-                <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                  From: <strong>{selectedEmail.fromName}</strong> ({selectedEmail.fromAddress}) · {formatDate(selectedEmail.date)}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', minWidth: 0 }}>
+                  {isAnalyzed ? (
+                    <span 
+                      className={`rating-badge ${styleMeta.class}`}
+                      style={{ background: styleMeta.gradient, flexShrink: 0, fontSize: '0.8rem', padding: '0.15rem 0.5rem', borderRadius: '6px' }}
+                      title={styleMeta.name}
+                    >
+                      {rating}
+                    </span>
+                  ) : (
+                    <span 
+                      className="rating-badge pending-badge"
+                      style={{ flexShrink: 0, fontSize: '0.75rem', padding: '0.15rem 0.5rem', borderRadius: '6px' }}
+                      title="Local AI analysis running in background"
+                    >
+                      ⏳ Queued
+                    </span>
+                  )}
+                  <h2>{selectedEmail.subject}</h2>
+                </div>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+                  From: <strong>{selectedEmail.fromName}</strong> &lt;{selectedEmail.fromAddress}&gt; · {formatDate(selectedEmail.date)}
                 </p>
               </div>
               <div className="modal-nav-group">
+                <button
+                  className={`modal-toggle-ai-btn ${showAiPanel ? 'active' : ''}`}
+                  title="Toggle AI Rating Panel (A)"
+                  onClick={() => setShowAiPanel(prev => !prev)}
+                >
+                  🧠 {showAiPanel ? 'Hide AI' : 'Show AI'}
+                </button>
                 <button
                   className="modal-nav-btn"
                   title="Previous email (K)"
@@ -852,95 +1079,105 @@ export default function App() {
               </div>
             </div>
 
-            <div className="modal-content">
-              {/* Left Panel: AI Review */}
-              <div className="ai-analysis-panel">
-                <div className="ai-header-badge">
-                  <span>🧠 Gemma 4 AI Deal Rating</span>
-                </div>
-
-                <div className="large-score-indicator">
-                  <div 
-                    className="score-circle"
-                    style={{ background: getRateClass(selectedEmail.analysis?.rating || 0).gradient }}
-                  >
-                    <span className="score-num">{selectedEmail.analysis?.rating ?? 0}</span>
-                    <span className="score-max">/10</span>
-                  </div>
-                  <span className="score-label" style={{ color: getRateClass(selectedEmail.analysis?.rating || 0).class === 'epic' ? 'var(--accent-amber)' : 'inherit' }}>
-                    {getRateClass(selectedEmail.analysis?.rating || 0).name}
-                  </span>
-                </div>
-
-                <div className="ai-details-list">
-                  <div className="ai-detail-block">
-                    <h5>Deal Summary</h5>
-                    <p style={{ fontWeight: '600' }}>
-                      {selectedEmail.analysis?.dealSummary || "No deal found."}
-                    </p>
+            <div className={`modal-content ${!showAiPanel ? 'ai-hidden' : ''}`}>
+              {/* Left Panel: AI Review (Collapsible) */}
+              {showAiPanel && (
+                <div className="ai-analysis-panel">
+                  <div className="ai-header-badge">
+                    <span>🧠 Gemma 4 AI Deal Rating</span>
                   </div>
 
-                  <div className="ai-detail-block">
-                    <h5>Discount Value</h5>
-                    {selectedEmail.analysis?.discount && selectedEmail.analysis?.discount !== 'None' ? (
-                      <span className="discount-pill-large">
-                        {selectedEmail.analysis.discount}
-                      </span>
-                    ) : (
-                      <p style={{ color: 'var(--text-muted)' }}>No notable discount extracted.</p>
-                    )}
-                  </div>
-
-                  <div className="ai-detail-block">
-                    <h5>Active Coupon Codes</h5>
-                    {selectedEmail.analysis?.couponCodes && selectedEmail.analysis.couponCodes.length > 0 ? (
-                      <div className="coupons-list">
-                        {selectedEmail.analysis.couponCodes.map((code, idx) => (
-                          <div key={idx} className="coupon-badge-large">
-                            <span>{code}</span>
-                            <button 
-                              className="copy-btn" 
-                              onClick={() => copyToClipboard(code)}
-                            >
-                              {copiedCode === code ? 'Copied! ✅' : 'Copy 📋'}
-                            </button>
-                          </div>
-                        ))}
+                  {isAnalyzed ? (
+                    <>
+                      <div className="large-score-indicator">
+                        <div 
+                          className="score-circle"
+                          style={{ background: styleMeta.gradient }}
+                        >
+                          <span className="score-num">{rating}</span>
+                          <span className="score-max">/10</span>
+                        </div>
+                        <span className="score-label" style={{ color: styleMeta.class === 'epic' ? 'var(--accent-amber)' : 'inherit' }}>
+                          {styleMeta.name}
+                        </span>
                       </div>
-                    ) : (
-                      <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>No promotional codes found.</p>
-                    )}
-                  </div>
 
-                  <div className="ai-detail-block">
-                    <h5>Expiration Date</h5>
-                    <p style={{ fontFamily: 'var(--font-display)', fontWeight: '600', color: selectedEmail.analysis?.expirationDate !== 'Unknown' ? 'var(--accent-coral)' : 'var(--text-muted)' }}>
-                      ⏰ {selectedEmail.analysis?.expirationDate || "Unknown"}
-                    </p>
-                  </div>
+                      <div className="ai-details-list">
+                        <div className="ai-detail-block">
+                          <h5>Deal Summary</h5>
+                          <p style={{ fontWeight: '600' }}>
+                            {selectedEmail.analysis?.dealSummary || "No deal found."}
+                          </p>
+                        </div>
 
-                  <div className="ai-detail-block">
-                    <h5>AI Decision Explanation</h5>
-                    <p style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>
-                      "{selectedEmail.analysis?.explanation || "No explanation provided."}"
-                    </p>
-                  </div>
+                        <div className="ai-detail-block">
+                          <h5>Discount Value</h5>
+                          {selectedEmail.analysis?.discount && selectedEmail.analysis?.discount !== 'None' ? (
+                            <span className="discount-pill-large">
+                              {selectedEmail.analysis.discount}
+                            </span>
+                          ) : (
+                            <p style={{ color: 'var(--text-muted)' }}>No notable discount extracted.</p>
+                          )}
+                        </div>
+
+                        <div className="ai-detail-block">
+                          <h5>Active Coupon Codes</h5>
+                          {selectedEmail.analysis?.couponCodes && selectedEmail.analysis.couponCodes.length > 0 ? (
+                            <div className="coupons-list">
+                              {selectedEmail.analysis.couponCodes.map((code, idx) => (
+                                <div key={idx} className="coupon-badge-large">
+                                  <span>{code}</span>
+                                  <button 
+                                    className="copy-btn" 
+                                    onClick={() => copyToClipboard(code)}
+                                  >
+                                    {copiedCode === code ? 'Copied! ✅' : 'Copy 📋'}
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>No promotional codes found.</p>
+                          )}
+                        </div>
+
+                        <div className="ai-detail-block">
+                          <h5>Expiration Date</h5>
+                          <p style={{ fontFamily: 'var(--font-display)', fontWeight: '600', color: selectedEmail.analysis?.expirationDate !== 'Unknown' ? 'var(--accent-coral)' : 'var(--text-muted)' }}>
+                            ⏰ {selectedEmail.analysis?.expirationDate || "Unknown"}
+                          </p>
+                        </div>
+
+                        <div className="ai-detail-block">
+                          <h5>AI Decision Explanation</h5>
+                          <p style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>
+                            "{selectedEmail.analysis?.explanation || "No explanation provided."}"
+                          </p>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="ai-pending-state-card">
+                      <div className="spinner-halo-small"></div>
+                      <h4>Deal Evaluation In Progress</h4>
+                      <p>
+                        Your local Gemma 4 model is queued to evaluate this deal in the background.
+                      </p>
+                      <div className="ai-shimmer-bar"></div>
+                      <div className="ai-detail-block" style={{ marginTop: '1.25rem' }}>
+                        <h5>Instant Skim</h5>
+                        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                          The full promotional email is 100% loaded on the right. This panel will automatically update with the rating score, discount %, and coupon codes as soon as the evaluation finishes.
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
+              )}
 
-              {/* Right Panel: Original HTML email in a sandboxed frame */}
+              {/* Right Panel: Original HTML email in a sandboxed frame (Maximized vertical space) */}
               <div className="email-content-panel">
-                <div className="email-meta-header">
-                  <div className="meta-row">
-                    <span className="meta-label">Subject</span>
-                    <span className="meta-value">{selectedEmail.subject}</span>
-                  </div>
-                  <div className="meta-row">
-                    <span className="meta-label">Sender</span>
-                    <span className="meta-value">{selectedEmail.fromName} &lt;{selectedEmail.fromAddress}&gt;</span>
-                  </div>
-                </div>
-
                 <div className="email-iframe-container">
                   <iframe 
                     title="Original Email Render"
@@ -955,6 +1192,7 @@ export default function App() {
             <div className="modal-footer">
               <span className="kbd-hint"><kbd className="kbd">K</kbd> Previous</span>
               <span className="kbd-hint"><kbd className="kbd">J</kbd> Next</span>
+              <span className="kbd-hint"><kbd className="kbd">A</kbd> Toggle AI</span>
               <span className="kbd-hint"><kbd className="kbd">Esc</kbd> Close</span>
             </div>
           </div>
@@ -962,46 +1200,56 @@ export default function App() {
         );
       })()}
 
-      {/* STREAM FETCHING PROGRESS BAR OVERLAY */}
+      {/* NON-BLOCKING FLOATING PROGRESS PILL */}
       {fetchProgress.active && (
-        <div className="fetch-overlay">
-          <div className="fetch-modal">
-            <div className="spinner-halo"></div>
-            
-            <h3 className="fetch-status-text">Scanning Promotional Inbox</h3>
-            <p className="fetch-sub-status">
-              {fetchProgress.status}
-            </p>
-
-            {fetchProgress.total > 0 && (
-              <>
-                <div className="progress-bar-container">
-                  <div 
-                    className="progress-bar-fill" 
-                    style={{ width: `${(fetchProgress.current / fetchProgress.total) * 100}%` }}
-                  ></div>
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', marginBottom: '1.5rem' }}>
-                  <span className="progress-percent">
-                    Evaluating {fetchProgress.current} of {fetchProgress.total}
-                  </span>
-                  <span className="progress-percent" style={{ color: 'var(--accent-cyan)' }}>
-                    {Math.round((fetchProgress.current / fetchProgress.total) * 100)}%
-                  </span>
-                </div>
-
-                {fetchProgress.subject && (
-                  <div style={{ width: '100%', background: 'hsla(223, 20%, 6%, 0.4)', padding: '0.85rem 1rem', borderRadius: '12px', border: '1px solid var(--border-light)', textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    <span style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: '600' }}>Evaluating Offer:</span><br />
-                    <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>"{fetchProgress.subject}"</span>
-                  </div>
-                )}
-              </>
-            )}
+        <aside className="bg-analysis-widget" aria-label="AI Deal Analyser Progress">
+          <div className="bg-analysis-header">
+            <div className="bg-analysis-indicator">
+              <span className="pulse-dot"></span>
+              <strong>{fetchProgress.phase === 'fetching' ? '📥 Fetching Emails' : '⚡ AI Deal Analyser'}</strong>
+            </div>
+            <div className="bg-analysis-controls">
+              {fetchProgress.phase === 'analyzing' && (
+                <button 
+                  className="bg-analysis-btn" 
+                  title="Pause Background Analysis"
+                  onClick={stopBackgroundAnalysis}
+                >
+                  ⏹ Pause
+                </button>
+              )}
+              <button 
+                className="bg-analysis-btn" 
+                title="Dismiss Widget"
+                onClick={() => setFetchProgress(prev => ({ ...prev, active: false }))}
+              >
+                ✕
+              </button>
+            </div>
           </div>
-        </div>
+
+          <p className="bg-analysis-status">{fetchProgress.status}</p>
+
+          {fetchProgress.total > 0 && (
+            <>
+              <div className="bg-progress-bar-container">
+                <div 
+                  className="bg-progress-bar-fill" 
+                  style={{ width: `${Math.min(100, Math.round((fetchProgress.current / fetchProgress.total) * 100))}%` }}
+                ></div>
+              </div>
+
+              <div className="bg-progress-meta">
+                <span>{fetchProgress.current} of {fetchProgress.total} evaluated</span>
+                <span className="text-emerald font-mono">
+                  {Math.round((fetchProgress.current / fetchProgress.total) * 100)}%
+                </span>
+              </div>
+            </>
+          )}
+        </aside>
       )}
+
     </div>
   );
 }
