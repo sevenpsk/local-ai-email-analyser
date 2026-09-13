@@ -50,23 +50,49 @@ Upon comparing the codebase against [SPECIFICATION.md](file:///Users/seven/atgra
 
 ---
 
-## 🛠️ Decisions & Changes Made in this Session
+## 🛠️ Decisions & Changes Made
 
-1. **Fixed Settings Serialization Bug**:
-   * *Problem*: In `server.js`, numeric fields (`imapPort`, `fetchLimit`) were cast via `Number(undefined) -> NaN` when partially updating settings. This caused `config.json` properties to become `null`.
-   * *Resolution*: Updated the settings controller in `server.js` to fall back to the existing config if incoming fields are `undefined` or `null`.
+### 1. Decoupled Two-Phase Email Ingestion & Skimming Architecture
+* **The Problem**: Previously, fetching emails and analyzing them with Ollama were coupled synchronously inside a blocking, full-screen modal overlay. For 50–300 promotional emails, this locked the entire application for 5 to 20 minutes (each inference taking ~3.5–4.5s) before the user could read or skim a single email.
+* **The Solution**: Decoupled the workflow into two independent phases:
+  * **Phase 1: Instant Ingestion (~2-3 seconds)**:
+    * IMAP fetch downloads envelope metadata, sender information, raw text, and sanitized HTML.
+    * Newly fetched emails are saved immediately into `data/emails.json` with `analysis: null`.
+    * Fires an `emails-loaded` Server-Sent Event (SSE) to notify the frontend, immediately populating the dashboard.
+  * **Phase 2: Asynchronous Background Analysis Queue**:
+    * Created `AnalysisManager` state machine in `server.js` to manage an asynchronous Ollama queue for all unanalyzed emails.
+    * Broadcasts real-time SSE events (`status`, `email-analyzed`, `queue-completed`, `queue-stopped`).
+    * Exposes endpoints: `GET /api/analysis-status`, `POST /api/analyze-pending`, and `POST /api/analysis/stop`.
+    * Unloads the Ollama model from system RAM (`keep_alive: 0`) automatically when the queue finishes or is paused.
 
-2. **Added Dev Server Proxy (`vite.config.js` & `src/App.jsx`)**:
-   * Added proxy config to Vite and simplified API calls from hardcoded backend ports to relative route `/api`, solving CORS issues and preventing hardcoding.
+### 2. UI & UX Refinements
+* **Non-Blocking Floating Progress Widget (`.bg-analysis-widget`)**:
+  * Removed the screen-blocking modal overlay entirely.
+  * Added a glassmorphic floating progress pill docked at the bottom right that displays a pulsing cyan live indicator, the subject of the email currently being evaluated, an animated progress bar, percentage counter, and pause/dismiss controls.
+* **Instant Skimming Support on Dashboard Cards**:
+  * Unanalyzed emails render immediately with a `⏳ Queued` badge, raw body snippet preview, and `⚡ Skim Ready` tag.
+  * Cards dynamically update in-place with rating badges (e.g. `9/10 EPIC DEAL!`) and discount pills as the background AI finishes each email.
+* **Maximized Email Reading Modal & Keyboard Shortcuts**:
+  * Clicking any email card immediately displays the full HTML email inside a sandboxed iframe.
+  * If the deal is still queued for AI review, the left panel displays a clean pulsing shimmer placeholder (`Deal Evaluation In Progress`) while the email remains 100% interactive.
+  * Added keyboard shortcuts for rapid skimming:
+    * <kbd>J</kbd> / <kbd>K</kbd>: Flick down / up between emails.
+    * <kbd>A</kbd>: Toggle/collapse the AI deal rating panel to maximize horizontal and vertical iframe reading space.
+    * <kbd>Esc</kbd>: Close the modal.
+* **Header Actions**: Added dynamic `⚡ Rate Pending (N)` and `🗑️ Clear Cache` buttons with native dialog confirmation.
 
-3. **In-Memory Caching (`db.js`)**:
-   * Introduced memory caching for GET `/api/emails` calls to prevent slow disk reads on every dashboard poll request.
+### 3. Database Layer & Consistency (`db.js`)
+* **In-Place Patching**: Added `updateEmailAnalysis(key, analysis)` to patch individual email records as background evaluations complete, avoiding rewriting the entire cache array.
+* **Cross-Process Consistency**: Adjusted `getEmails()` to read from `data/emails.json` on disk to ensure consistency across separate Node processes, test runners, and server instances.
 
-4. **Optimized RAM Management during Ingestion**:
-   * *Problem*: Mid-batch model unloading (every 20 items) causes latency, but leaving it loaded forever hogs RAM.
-   * *Resolution*: Re-implemented `unloadOllamaModel` and configured it to trigger **only at the end of the entire fetch batch**. This guarantees optimal ingestion speed while immediately freeing up 3 GB of system RAM as soon as the scan finishes.
+### 4. Automated Testing & Verification Infrastructure
+* **Unit & Logic Tests (`tests/api.test.js`)**: Tests database CRUD operations, in-place updates, and filtering/search logic across mixed pending and analyzed emails.
+* **E2E Integration Flow (`tests/e2e_flow.test.js`)**: Tests fast ingestion duration (<500ms), skimming fallback values, hotkey navigation indexing, background updates, and cache clearing.
+* **Browser Automation (`tests/browser_e2e.js`)**: Headless Chrome DevTools Protocol automation testing UI rendering, card click, modal opening, J/K hotkeys, floating widget, and clear cache.
+* **NPM Script**: Added `"test": "node --test --test-concurrency=1 tests/*.test.js"` to `package.json`.
 
 ---
+
 
 ## 📋 Next Steps for Future Development
 
